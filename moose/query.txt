@@ -1,0 +1,118 @@
+SELECT acquisition_time, arealnr_nu, gr_natype, collar_id, 'Red deer' AS animaltype
+FROM
+Positions
+INNER JOIN
+arealbeskrivelser
+ON ST_Contains(geom, Positions.Position) = true
+WHERE acquisition_time
+BETWEEN to_timestamp('01-03-2017 00:00:00','DD-MM-YYYY HH24:MI:SS') 
+AND to_timestamp('27-08-2017 23:59:59','DD-MM-YYYY HH24:MI:SS')
+AND collar_id in (SELECT collar FROM 
+                  gps_plus_animals
+                  INNER JOIN
+                  gps_plus_species
+                  ON
+                  gps_plus_animals.species = gps_plus_species.id
+                  INNER JOIN
+                  gps_plus_assignment
+                  ON gps_plus_assignment.animal = gps_plus_animals.id
+                  WHERE gps_plus_species.name = 'Red Deer')
+
+
+-- species = "Red Deer";
+-- species = "Moose";
+
+SELECT row_number() OVER(ORDER BY tmp.description) AS AreaId, * FROM
+(SELECT COUNT(*) AS Occurences, gr_natype AS Description
+FROM
+Positions
+INNER JOIN
+arealbeskrivelser
+ON ST_Contains(geom, Positions.Position) = true
+WHERE acquisition_time
+BETWEEN to_timestamp('01-03-2017 00:00:00','DD-MM-YYYY HH24:MI:SS') 
+AND to_timestamp('27-08-2017 23:59:59','DD-MM-YYYY HH24:MI:SS')
+AND collar_id in (SELECT collar FROM 
+                  gps_plus_animals
+                  INNER JOIN
+                  gps_plus_species
+                  ON
+                  gps_plus_animals.species = gps_plus_species.id
+                  INNER JOIN
+                  gps_plus_assignment
+                  ON gps_plus_assignment.animal = gps_plus_animals.id
+                  WHERE gps_plus_species.name = 'Moose')
+GROUP BY gr_natype) AS tmp;
+
+
+public HttpResponseMessage GetVegetationDistribution([FromUri]GetDistParameters p)
+    {
+        string species = "";
+        if (p.species == 0)
+        {
+            species = "Red Deer";
+        }
+        else
+        {
+            species = "Moose";
+        }
+
+        if (!Members.IsLoggedIn())
+        {
+            // Seven day delay
+            DateTime toDate = DateTime.Parse(p.toDate);
+            p.toDate = DateTime.Compare(toDate, DateTime.Now.AddDays(-7)) > 0 ? DateTime.Now.AddDays(-7).ToString("dd/MM/yyyy") : p.toDate;
+        }
+
+        List<object> data = new List<object>();
+        using (var conn = new NpgsqlConnection(ConfigurationManager.ConnectionStrings["gpsplusxDbDSN"].ConnectionString))
+        {
+            conn.Open();
+            using (var cmd = new NpgsqlCommand())
+            {
+                cmd.Connection = conn;
+
+                // Retrieve all rows
+                cmd.CommandText = string.Format(@"SELECT row_number() OVER(ORDER BY tmp.description) AS AreaId, * FROM
+                                    (SELECT COUNT(*) AS Occurences, gr_natype AS Description
+                                    FROM
+                                    Positions
+                                    INNER JOIN
+                                    arealbeskrivelser
+                                    ON ST_Contains(geom, Positions.Position) = true
+                                    WHERE acquisition_time
+                                    BETWEEN to_timestamp('{0} 00:00:00','DD-MM-YYYY HH24:MI:SS') 
+                                    AND to_timestamp('{1} 23:59:59','DD-MM-YYYY HH24:MI:SS')
+                                    AND collar_id in (SELECT collar FROM 
+					                                    gps_plus_animals
+					                                    INNER JOIN
+					                                    gps_plus_species
+					                                    ON
+					                                    gps_plus_animals.species = gps_plus_species.id
+					                                    INNER JOIN
+					                                    gps_plus_assignment
+					                                    ON gps_plus_assignment.animal = gps_plus_animals.id
+					                                    WHERE gps_plus_species.name = '{2}')
+                                    GROUP BY gr_natype) AS tmp", p.fromDate, p.toDate, species);
+
+                var myDataReader = cmd.ExecuteReader();                
+                while (myDataReader.Read())
+                {
+                    Dictionary<string, object> dict = new Dictionary<string, object>() {
+
+                    { "occurences", myDataReader.GetInt32(1) },
+                    { "areaId", myDataReader.GetInt32(0)},
+                    { "description", myDataReader.GetString(2)}
+                };
+                    data.Add(dict);
+                }
+
+                myDataReader.Close();
+            }
+            if (conn != null) { conn.Close(); }
+        }
+        Dictionary<string, object> distJSONDict = new Dictionary<string, object>();
+        distJSONDict.Add("data", data.ToArray());
+
+        return this.Request.CreateResponse(HttpStatusCode.OK, distJSONDict);
+    }
